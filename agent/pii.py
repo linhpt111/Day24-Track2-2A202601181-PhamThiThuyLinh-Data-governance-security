@@ -1,39 +1,60 @@
-"""BƯỚC 3a — PII gate TRƯỚC KHI vào context/store (12').
-
-Đọc Guide.md (§3a) trước khi bắt đầu: Presidio không có tiếng Việt
-sẵn (AnalyzerEngine() mặc định chỉ hỗ trợ "en"). Đường an toàn cho 2h là
-regex recognizer + deny-list cho PERSON — coi spaCy/transformers NER là
-stretch goal, KHÔNG bắt buộc.
-
-Interface bắt buộc (tests/test_pii.py gọi trực tiếp 2 hàm này):
-
-    detect(text: str) -> list[dict]
-        Mỗi entity: {"type": str, "start": int, "end": int}
-        `type` là một trong: "VN_CCCD", "VN_PHONE", "VN_BANK_ACCOUNT", "EMAIL"
-        `start`/`end` là offset ký tự trong `text` (offset đầu bao gồm,
-        offset cuối KHÔNG bao gồm — giống slice Python text[start:end]).
-        Format này khớp với tests/vn_pii_testset.jsonl.
-
-    redact(text: str) -> str
-        Trả về `text` sau khi mọi entity từ detect() bị thay bằng
-        "[REDACTED_<TYPE>]". Phải xử lý overlap/thứ tự đúng khi có nhiều
-        entity (gợi ý: thay từ cuối văn bản về đầu để offset không bị lệch).
-
-Gợi ý định dạng (không bắt buộc đúng regex này, miễn đạt ngưỡng trên test
-set ở tests/vn_pii_testset.jsonl):
-    VN_CCCD          12 chữ số liên tiếp
-    VN_PHONE         0 + 9-10 chữ số, có thể có dấu cách/gạch ngang
-    VN_BANK_ACCOUNT  8-16 chữ số liên tiếp, thường đi kèm "STK"/"số tài khoản"
-    EMAIL            dạng chuẩn local@domain.tld
-
-Đo bằng: pytest tests/test_pii.py -v -s   (in ra precision/recall)
-"""
+"""PII detection and redaction for the lab agent."""
 from __future__ import annotations
+
+import re
+
+
+EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+CCCD_RE = re.compile(r"\b\d{12}\b")
+PHONE_RE = re.compile(r"\b0(?:[\s.-]?\d){9,10}\b")
+BANK_RE = re.compile(r"\b\d{8,16}\b")
+
+
+def _add_entity(entities: list[dict], kind: str, start: int, end: int) -> None:
+    if any(start < e["end"] and e["start"] < end for e in entities):
+        return
+    entities.append({"type": kind, "start": start, "end": end})
+
+
+def _near_label(text: str, start: int, labels: tuple[str, ...], window: int = 56) -> bool:
+    prefix = text[max(0, start - window) : start].lower()
+    return any(label.lower() in prefix for label in labels)
 
 
 def detect(text: str) -> list[dict]:
-    raise NotImplementedError("BƯỚC 3a: implement PII detection")
+    entities: list[dict] = []
+
+    for match in EMAIL_RE.finditer(text):
+        _add_entity(entities, "EMAIL", match.start(), match.end())
+
+    for match in CCCD_RE.finditer(text):
+        if _near_label(text, match.start(), ("cccd", "can cuoc", "căn cước"), 40):
+            _add_entity(entities, "VN_CCCD", match.start(), match.end())
+
+    for match in PHONE_RE.finditer(text):
+        if _near_label(
+            text,
+            match.start(),
+            ("sđt", "sdt", "dien thoai", "điện thoại", "phone", "lien he", "liên hệ"),
+            56,
+        ):
+            _add_entity(entities, "VN_PHONE", match.start(), match.end())
+
+    for match in BANK_RE.finditer(text):
+        if _near_label(
+            text,
+            match.start(),
+            ("stk", "tai khoan", "tài khoản", "chuyen khoan", "chuyển khoản"),
+            64,
+        ):
+            _add_entity(entities, "VN_BANK_ACCOUNT", match.start(), match.end())
+
+    return sorted(entities, key=lambda e: (e["start"], e["end"], e["type"]))
 
 
 def redact(text: str) -> str:
-    raise NotImplementedError("BƯỚC 3a: implement PII redaction")
+    redacted = text
+    for entity in sorted(detect(text), key=lambda e: e["start"], reverse=True):
+        replacement = f"[REDACTED_{entity['type']}]"
+        redacted = redacted[: entity["start"]] + replacement + redacted[entity["end"] :]
+    return redacted

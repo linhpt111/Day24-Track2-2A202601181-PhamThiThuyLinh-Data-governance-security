@@ -1,27 +1,4 @@
-"""BƯỚC 3b — PEP (Policy Enforcement Point) tại tool call (15').
-
-Cổng chặn TRƯỚC KHI tool thật sự execute. Đọc Guide.md (§3b).
-
-Interface bắt buộc (tests/test_policy.py và agent/runner.py gọi trực tiếp):
-
-    check(context: PolicyContext) -> tuple[bool, str]
-        Trả về (allow, reason).
-        `reason` KHÔNG BAO GIỜ được để trống — cả khi allow=True và
-        allow=False. Đây là evidence audit ở Bước 4 (rubric: "Audit
-        completeness = 100%" — điều kiện trượt nếu có dòng thiếu reason).
-
-PolicyContext — 5 input đúng slide §3.3 (đã định nghĩa sẵn, đừng đổi field):
-
-    data_classification: str   "public" | "internal" | "restricted"
-    request_purpose: str       tự do, ví dụ "reconciliation", "support-reply"
-    agent_owner: str            định danh agent/run gọi tool này
-    delegation_depth: int       0 = gọi trực tiếp bởi user, >0 = agent gọi agent
-    egress_enabled: bool        run hiện tại có được phép gọi network không
-
-Rule TỐI THIỂU bắt buộc (không được viết yếu hơn rule này):
-
-    classification == "restricted" and egress_enabled is True  ->  DENY
-"""
+"""Policy enforcement point for tool calls."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -37,4 +14,11 @@ class PolicyContext:
 
 
 def check(context: PolicyContext) -> tuple[bool, str]:
-    raise NotImplementedError("BƯỚC 3b: implement policy check")
+    if context.data_classification == "restricted" and context.egress_enabled:
+        return False, "restricted data cannot be used when egress is enabled"
+    if context.delegation_depth > 1 and context.egress_enabled:
+        return False, "delegated agent egress is not allowed"
+    return (
+        True,
+        f"allowed {context.data_classification} data for {context.request_purpose} by {context.agent_owner}",
+    )
